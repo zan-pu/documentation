@@ -107,7 +107,38 @@
 
 ### 4.1.1 结构冲突的解决
 
-通过改变数据通路或增加硬件来解决，如：博博写
+我们解决结构冲突的基本方法是：
+
+- 通过改变数据通路，或
+- 增加硬件来解决
+
+“结构冲突”在所有的数据冲突中属于相对比较方便解决的一种数据相关问题。这里，我们小组以跳转指令 BEQ 为例子，介绍一下我们是如何解决“结构冲突”的。
+
+首先，BEQ 指令的具体执行如下：如果寄存器 rs 的值等于寄存器 rt 的值则转移，否则顺序执行。转移目标由立即数 offset 左移 2 位并进行有符号扩展的值加上该分支指令对应的延迟槽指令的 PC 计算得到。
+
+在 BEQ 指令中，由于我们需要计算寄存器 rs 与寄存器 rt 的差值，因此事实上这部分需要 ALU 的运算结果，但是由于 BEQ 需要控制单元在译码过程（Instruction Decode）就给出相应的结果，那么我们是来不及将 rs 和 rt 寄存器的值前递给 ALU 再进行计算的，因此我们小组在 ID 阶段单独增加了一个硬件单元 Branch Judge，用来专门判断 rs 和 rt 寄存器的值，以决定 NPCOp 的具体信号。
+
+<img src="https://i.imgur.com/VGLVexb.png" width="60%" style="margin: 20px auto;"/>
+
+单独新增的 Branch Judge 硬件具体实现如下：
+
+```verilog
+module branch_judge(
+           input  wire[31:0] reg1_data,
+           input  wire[31:0] reg2_data,
+
+           output wire       zero       // Calculate whether rs - rt is zero
+       );
+
+// rs - rt = diff
+wire[32:0] diff;
+
+assign diff = {reg1_data[31], reg1_data} - {reg2_data[31], reg2_data};
+assign zero = (diff == 0) ? `BRANCH_TRUE : `BRANCH_FALSE;
+endmodule
+```
+
+这样，我们就通过增加硬件的方法解决了结构冲突的问题。
 
 ### 4.1.2 数据冒险——Data Hazard
 
@@ -115,7 +146,7 @@
 
 #### 4.1.2.1 数据冲突的解决
 
-对于数据冲突，比如
+对于数据冲突，比如：
 
 ```
 sub $2, $1, $3
@@ -139,7 +170,7 @@ sw $15, 100($2)
 - 上一条指令会写入寄存器堆，且：
 - 上一条指令的写入地址是当前指令 EX 阶段中 ALU 输入寄存器的一个
 
-```
+```clike
 // ALU 第一个操作数
 if (EX/MEM.RegWrite = 1 &&
     EX/MEM.RegisterRd == ID/EX.RegisterRs) {
@@ -156,7 +187,7 @@ if (EX/MEM.RegWrite = 1 &&
 第二种会出现的 Data Hazard 就是 MEM/WB 类型的 Data Hazard.
 MEM/WB Data Hazard 会出现在当前指令处于 EX 阶段，而两个时钟周期之前的指令将同一个寄存器更新了。
 
-```
+```clike
 // ALU 第一个操作数
 if (MEM/WB.RegWrite == 1 &&
     MEM/WB.RegisterRd == ID/EX.RegisterRs &&
@@ -186,7 +217,7 @@ and $12, $2, $5
 
 事实上，在 LW 指令的 MEM 阶段，我们就获得了相应的数据，那么，对于下一条 AND 指令，我们只需要在其 EX 阶段前将流水线 Stall 住一个时钟周期，即可将 Data Memory 的数据前递至正确的地方。
 
-为此我们引入 stall unit，用于控制各个缓冲器，来决定五级流水在哪些阶段进行暂停，哪些阶段继续。对于访存冲突的冲突检测方法如下：
+为此我们引入 Stall Unit，用于控制各个缓冲器，来决定五级流水在哪些阶段进行暂停，哪些阶段继续。对于访存冲突的冲突检测方法如下：
 
 ```
 stall_signal = ((en_reg_write_mem && en_lw_mem) && (dst_reg_mem == rs)) ? `MEM_REGW :
@@ -239,10 +270,10 @@ if (stall_C[2] == 1 && stall_C[3] == 1 && lw_mem_addr == rs_in) begin
 问题 2：流水线设计中，R 型指令只需要 IF、ID、EX、WB 四个阶段，不需要经历访存过程，R 型指令与其他类型指令可能出现同时处于 WB 阶段，则寄存器会出现异常
 解决方法：通过保证所有指令的执行过程都经历五个阶段，如果一条指令不需要某一阶段的时候，为其加上 NOP 阶段，代表本阶段此指令什么都不干
 
-问题 3：如何判断出现 data hazards 的情况及如何解决？
-解决方法：通过增加 forwarding unit 的数据通路来处理算数运算中的 data hazard
+问题 3：如何判断出现 Data Hazards 的情况及如何解决？
+解决方法：通过增加 Forwarding Unit 的数据通路来处理算数运算中的 Data Hazard
 
-问题 4：lw、sw 这一类涉及到存储获取存储器中数据的指令会出现访存冲突
+问题 4：LW、SW 这一类涉及到存储获取存储器中数据的指令会出现访存冲突
 解决方法：引入 NOP 指令，表示这一部分不执行任何指令，这样可以在不大影响流水线 CPU 整体性能的前提下处理访存冲突
 
 问题 5：流水线 CPU 需要知道下一条指令取哪一条，这样流水线才能顺利执行。即控制冲突问题
